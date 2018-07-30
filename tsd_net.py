@@ -120,16 +120,30 @@ class SimpleDynamicEncoder(nn.Module):
 class BSpanDecoder(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate):
         super().__init__()
+        self.emb = nn.Embedding(vocab_size, embed_size)
+        if cfg.use_positional_embedding:
+            self.positional_embedding = nn.Embedding(cfg.max_ts+1, embed_size)
+            init_pos_emb = self.position_encoding_init(cfg.max_ts + 1, embed_size)
+            self.positional_embedding.weight.data = init_pos_emb
         self.gru = nn.GRU(hidden_size + embed_size, hidden_size, dropout=dropout_rate)
         self.proj = nn.Linear(hidden_size * 2, vocab_size)
-        self.emb = nn.Embedding(vocab_size, embed_size)
+
         self.attn_u = Attn(hidden_size)
         self.proj_copy1 = nn.Linear(hidden_size, hidden_size)
         self.proj_copy2 = nn.Linear(hidden_size, hidden_size)
         self.dropout_rate = dropout_rate
         init_gru(self.gru)
 
-    def forward(self, u_enc_out, z_tm1, last_hidden, u_input_np, pv_z_enc_out, prev_z_input_np, u_emb, pv_z_emb):
+
+    def position_encoding_init(self, n_position, d_pos_vec):
+        position_enc = np.array([[pos / np.power(10000, 2 * (j // 2) / d_pos_vec) for j in range(d_pos_vec)]
+                                    if pos != 0 else np.zeros(d_pos_vec) for pos in range(n_position)])
+
+        position_enc[1:, 0::2] = np.sin(position_enc[1:, 0::2])  # dim 2i
+        position_enc[1:, 1::2] = np.cos(position_enc[1:, 1::2])  # dim 2i+1
+        return torch.from_numpy(position_enc).type(torch.FloatTensor)
+
+    def forward(self, u_enc_out, z_tm1, last_hidden, u_input_np, pv_z_enc_out, prev_z_input_np, u_emb, pv_z_emb, position):
 
         sparse_u_input = Variable(get_sparse_input_aug(u_input_np), requires_grad=False)
 
@@ -139,6 +153,13 @@ class BSpanDecoder(nn.Module):
             context = self.attn_u(last_hidden, u_enc_out)
         embed_z = self.emb(z_tm1)
         embed_z = F.dropout(embed_z, self.dropout_rate)
+
+        if cfg.use_positional_embedding:
+            position_label = [position] * u_enc_out.size(1)  # [B]
+            position_label = cuda_(Variable(torch.LongTensor(position_label))).view(1, -1)  # [1,B]
+            pos_emb = self.positional_embedding(position_label)
+            embed_z = embed_z + pos_emb
+
         gru_in = torch.cat([embed_z, context], 2)
         gru_out, last_hidden = self.gru(gru_in, last_hidden)
         gru_out = F.dropout(gru_out, self.dropout_rate)
@@ -246,7 +267,7 @@ class TSD(nn.Module):
                  max_ts, beam_search=False, teacher_force=100, **kwargs):
         super().__init__()
         self.vocab = kwargs['vocab']
-
+        self.reader = kwargs['reader']
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.dec_gru = nn.GRU(degree_size + embed_size + hidden_size * 2, hidden_size, dropout=dropout_rate)
         self.proj = nn.Linear(hidden_size * 3, vocab_size)
@@ -335,7 +356,7 @@ class TSD(nn.Module):
                     self.z_decoder(u_enc_out=u_enc_out, u_input_np=u_input_np,
                                    z_tm1=z_tm1, last_hidden=last_hidden,
                                    pv_z_enc_out=pv_z_enc_out, prev_z_input_np=prev_z_input_np,
-                                   u_emb=u_emb, pv_z_emb=pv_z_emb)
+                                   u_emb=u_emb, pv_z_emb=pv_z_emb, position=t)
                 pz_proba.append(proba)
                 pz_dec_outs.append(pz_dec_out)
                 z_np = z_tm1.view(-1).cpu().data.numpy()
@@ -375,7 +396,8 @@ class TSD(nn.Module):
                                                           pv_z_enc_out=pv_z_enc_out, prev_z_input_np=prev_z_input_np,
                                                           u_emb=u_emb, pv_z_emb=pv_z_emb)
             pz_dec_outs = torch.cat(pz_dec_outs, dim=0)
-
+            degree_input = self.reader.db_degree_handler(bspan_index, kwargs['dial_id'])
+            degree_input = cuda_(Variable(torch.from_numpy(degree_input).float()))
             if mode == 'test':
                 if not self.beam_search:
                     m_output_index = self.greedy_decode(pz_dec_outs, u_enc_out, m_tm1, u_input_np, last_hidden,
@@ -400,7 +422,7 @@ class TSD(nn.Module):
             pz_dec_out, last_hidden, proba = \
                 self.z_decoder(u_enc_out=u_enc_out, u_input_np=u_input_np,
                                z_tm1=z_tm1, last_hidden=last_hidden, pv_z_enc_out=pv_z_enc_out,
-                               prev_z_input_np=prev_z_input_np, u_emb=u_emb, pv_z_emb=pv_z_emb)
+                               prev_z_input_np=prev_z_input_np, u_emb=u_emb, pv_z_emb=pv_z_emb, position=t)
             pz_proba.append(proba)
             pz_dec_outs.append(pz_dec_out)
             z_proba, z_index = torch.topk(proba, 1)  # [B,1]

@@ -40,7 +40,8 @@ class Model:
                                eos_token_idx=self.reader.vocab.encode('EOS_M'),
                                vocab=self.reader.vocab,
                                teacher_force=cfg.teacher_force,
-                               degree_size=cfg.degree_size)
+                               degree_size=cfg.degree_size,
+                               reader=self.reader)
         self.EV = evaluator_dict[dataset] # evaluator class
         if cfg.cuda: self.m = self.m.cuda()
         self.base_epoch = -1
@@ -150,9 +151,9 @@ class Model:
             logging.info('validation loss in epoch %d sup:%f unsup:%f' % (epoch, valid_sup_loss, valid_unsup_loss))
             logging.info('time for epoch %d: %f' % (epoch, time.time()-sw))
             valid_loss = valid_sup_loss + valid_unsup_loss
-
+            self.save_model(epoch)
             if valid_loss <= prev_min_loss:
-                self.save_model(epoch)
+                #self.save_model(epoch)
                 prev_min_loss = valid_loss
             else:
                 early_stop_count -= 1
@@ -176,8 +177,8 @@ class Model:
                 m_idx, z_idx, turn_states = self.m(mode=mode, u_input=u_input, u_len=u_len, z_input=z_input,
                                                    m_input=m_input,
                                                    degree_input=degree_input, u_input_np=u_input_np,
-                                                   m_input_np=m_input_np,
-                                                   m_len=m_len, turn_states=turn_states,**kw_ret)
+                                                   m_input_np=m_input_np, m_len=m_len, turn_states=turn_states,
+                                                   dial_id=turn_batch['dial_id'], **kw_ret)
                 self.reader.wrap_result(turn_batch, m_idx, z_idx, prev_z=prev_z)
                 prev_z = z_idx
         ev = self.EV(result_path=cfg.result_path)

@@ -54,6 +54,7 @@ class _Config:
         self.beam_search = False
         self.beam_size = 10
         self.sampling = False
+        self.use_positional_embedding = True
         self.unfrz_attn_epoch = 0
         self.skip_unsup = False
         self.truncated = False
@@ -92,6 +93,7 @@ class _Config:
         self.beam_search = False
         self.beam_size = 10
         self.sampling = False
+        self.use_positional_embedding = Trueh
         self.unfrz_attn_epoch = 0
         self.skip_unsup = False
         self.truncated = False
