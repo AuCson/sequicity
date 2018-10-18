@@ -835,3 +835,4 @@ def get_glove_matrix(vocab, initial_embedding_np):
     logging.info('%d known embedding. old mean: %f new mean %f, old std %f new std %f' % (cnt, old_avg,
                                                                                           new_avg, old_std, new_std))
     return vec_array
+
