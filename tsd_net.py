@@ -63,10 +63,27 @@ class Attn(nn.Module):
         stdv = 1. / math.sqrt(self.v.size(0))
         self.v.data.normal_(mean=0, std=stdv)
 
-    def forward(self, hidden, encoder_outputs, normalize=True):
+    def forward(self, hidden, encoder_outputs, mask=False, inp_seqs=None, stop_tok=None, normalize=True):
         encoder_outputs = encoder_outputs.transpose(0, 1)  # [B,T,H]
         attn_energies = self.score(hidden, encoder_outputs)
-        normalized_energy = F.softmax(attn_energies, dim=2)  # [B,1,T]
+        if True or not mask:
+            normalized_energy = F.softmax(attn_energies, dim=2)  # [B,1,T]
+        else:
+            mask_idx = []
+            # inp_seqs: ndarray of [T,B]
+            # inp_seqs = inp_seqs.cpu().numpy()
+            for b in range(inp_seqs.shape[1]):
+                for t in range(inp_seqs.shape[0] + 1):
+                    if t == inp_seqs.shape[0] or inp_seqs[t,b] in stop_tok:
+                        mask_idx.append(t)
+                        break
+            mask = []
+            for mask_len in mask_idx:
+                mask.append([1.] * mask_len + [0.] * (inp_seqs.shape[0] - mask_len))
+            mask = cuda_(Variable(torch.FloatTensor(mask))) # [B,T]
+            attn_energies = attn_energies * mask.unsqueeze(1)
+            normalized_energy = F.softmax(attn_energies, dim=2)  # [B,1,T]
+
         context = torch.bmm(normalized_energy, encoder_outputs)  # [B,1,H]
         return context.transpose(0, 1)  # [1,B,H]
 
@@ -118,7 +135,7 @@ class SimpleDynamicEncoder(nn.Module):
 
 
 class BSpanDecoder(nn.Module):
-    def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate):
+    def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate, vocab):
         super().__init__()
         self.emb = nn.Embedding(vocab_size, embed_size)
         if cfg.use_positional_embedding:
@@ -132,8 +149,11 @@ class BSpanDecoder(nn.Module):
         self.proj_copy1 = nn.Linear(hidden_size, hidden_size)
         self.proj_copy2 = nn.Linear(hidden_size, hidden_size)
         self.dropout_rate = dropout_rate
-        init_gru(self.gru)
 
+        self.inp_dropout = nn.Dropout(self.dropout_rate)
+
+        init_gru(self.gru)
+        self.vocab = vocab
 
     def position_encoding_init(self, n_position, d_pos_vec):
         position_enc = np.array([[pos / np.power(10000, 2 * (j // 2) / d_pos_vec) for j in range(d_pos_vec)]
@@ -148,13 +168,14 @@ class BSpanDecoder(nn.Module):
         sparse_u_input = Variable(get_sparse_input_aug(u_input_np), requires_grad=False)
 
         if pv_z_enc_out is not None:
-            context = self.attn_u(last_hidden, torch.cat([pv_z_enc_out, u_enc_out], dim=0))
+            context = self.attn_u(last_hidden, torch.cat([pv_z_enc_out, u_enc_out], dim=0), mask=True,
+                                  inp_seqs=np.concatenate([prev_z_input_np, u_input_np], 0), stop_tok=[self.vocab.encode('EOS_M')])
         else:
-            context = self.attn_u(last_hidden, u_enc_out)
+            context = self.attn_u(last_hidden, u_enc_out, mask=True, inp_seqs=u_input_np, stop_tok=[self.vocab.encode('EOS_M')])
         embed_z = self.emb(z_tm1)
-        embed_z = F.dropout(embed_z, self.dropout_rate)
+        # embed_z = self.inp_dropout(embed_z)
 
-        if cfg.use_positional_embedding:
+        if cfg.use_positional_embedding: # defaulty not used
             position_label = [position] * u_enc_out.size(1)  # [B]
             position_label = cuda_(Variable(torch.LongTensor(position_label))).view(1, -1)  # [1,B]
             pos_emb = self.positional_embedding(position_label)
@@ -162,9 +183,9 @@ class BSpanDecoder(nn.Module):
 
         gru_in = torch.cat([embed_z, context], 2)
         gru_out, last_hidden = self.gru(gru_in, last_hidden)
-        gru_out = F.dropout(gru_out, self.dropout_rate)
+        #gru_out = self.inp_dropout(gru_out)
         gen_score = self.proj(torch.cat([gru_out, context], 2)).squeeze(0)
-        gen_score = F.dropout(gen_score, self.dropout_rate)
+        #gen_score = self.inp_dropout(gen_score)
         u_copy_score = F.tanh(self.proj_copy1(u_enc_out.transpose(0, 1)))  # [B,T,H]
         # stable version of copynet
         u_copy_score = torch.matmul(u_copy_score, gru_out.squeeze(0).unsqueeze(2)).squeeze(2)
@@ -175,7 +196,7 @@ class BSpanDecoder(nn.Module):
             1) + u_copy_score_max  # [B,V]
         u_copy_score = cuda_(u_copy_score)
         if pv_z_enc_out is None:
-            u_copy_score = F.dropout(u_copy_score, self.dropout_rate)
+            #u_copy_score = self.inp_dropout(u_copy_score)
             scores = F.softmax(torch.cat([gen_score, u_copy_score], dim=1), dim=1)
             gen_score, u_copy_score = scores[:, :cfg.vocab_size], \
                                       scores[:, cfg.vocab_size:]
@@ -240,8 +261,8 @@ class ResponseDecoder(nn.Module):
         sparse_z_input = Variable(self.get_sparse_selective_input(z_input_np), requires_grad=False)
 
         m_embed = self.emb(m_t_input)
-        z_context = self.attn_z(last_hidden, z_enc_out)
-        u_context = self.attn_u(last_hidden, u_enc_out)
+        z_context = self.attn_z(last_hidden, z_enc_out, mask=True, stop_tok=[self.vocab.encode('EOS_Z2')], inp_seqs=z_input_np)
+        u_context = self.attn_u(last_hidden, u_enc_out, mask=True, stop_tok=[self.vocab.encode('EOS_M')], inp_seqs=u_input_np)
         gru_in = torch.cat([m_embed, u_context, z_context, degree_input.unsqueeze(0)], dim=2)
         gru_out, last_hidden = self.gru(gru_in, last_hidden)
         gen_score = self.proj(torch.cat([z_context, u_context, gru_out], 2)).squeeze(0)
@@ -272,7 +293,7 @@ class TSD(nn.Module):
         self.dec_gru = nn.GRU(degree_size + embed_size + hidden_size * 2, hidden_size, dropout=dropout_rate)
         self.proj = nn.Linear(hidden_size * 3, vocab_size)
         self.u_encoder = SimpleDynamicEncoder(vocab_size, embed_size, hidden_size, layer_num, dropout_rate)
-        self.z_decoder = BSpanDecoder(embed_size, hidden_size, vocab_size, dropout_rate)
+        self.z_decoder = BSpanDecoder(embed_size, hidden_size, vocab_size, dropout_rate, self.vocab)
         self.m_decoder = ResponseDecoder(embed_size, hidden_size, vocab_size, degree_size, dropout_rate,
                                                self.dec_gru, self.proj, self.emb, self.vocab)
         self.embed_size = embed_size
@@ -607,7 +628,7 @@ class TSD(nn.Module):
         finished = m_tm1 == 'EOS_M'
         decoded = [_.view(-1)[0] for _ in decoded]
         decoded_sentence = self.vocab.sentence_decode(decoded, cfg.eos_m_token).split()
-        reward = 0.0 # -0.1
+        reward = -0.01
         '''
         if not finished:
             if m_tm1 in req_slots:
@@ -617,12 +638,12 @@ class TSD(nn.Module):
         # some modification for reward function.
         if m_tm1 in req_slots:
             if decoded_sentence and m_tm1 not in decoded_sentence[:-1]:
-                reward += 1.5
+                reward += 1.0
             else:
                 reward -= 1.0 # repeat
-        elif m_tm1 in all_reqs:
-            if decoded_sentence and m_tm1 not in decoded_sentence[:-1]:
-                reward += 0.5
+        #elif m_tm1 in all_reqs:
+        #    if decoded_sentence and m_tm1 not in decoded_sentence[:-1]:
+        #        reward += 0.5
         return reward, finished
 
     def sampling_decode(self, pz_dec_outs, u_enc_out, m_tm1, u_input_np, last_hidden, degree_input, bspan_index):
@@ -685,7 +706,7 @@ class TSD(nn.Module):
             rewards.insert(0, R)
 
         rewards = torch.Tensor(rewards)
-        rewards = (rewards - rewards.mean()) / (rewards.std() + np.finfo(np.float32).eps)
+        #rewards = (rewards - rewards.mean()) / (rewards.std() + np.finfo(np.float32).eps)
 
         for log_prob, reward in zip(log_probas, rewards):
             policy_loss.append(-log_prob * reward)

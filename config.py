@@ -54,7 +54,7 @@ class _Config:
         self.beam_search = False
         self.beam_size = 10
         self.sampling = False
-        self.use_positional_embedding = True
+        self.use_positional_embedding = False
         self.unfrz_attn_epoch = 0
         self.skip_unsup = False
         self.truncated = False
@@ -93,7 +93,7 @@ class _Config:
         self.beam_search = False
         self.beam_size = 10
         self.sampling = False
-        self.use_positional_embedding = Trueh
+        self.use_positional_embedding = False
         self.unfrz_attn_epoch = 0
         self.skip_unsup = False
         self.truncated = False
@@ -113,7 +113,7 @@ class _Config:
         file_handler = logging.FileHandler('./log/log_{}.txt'.format(current_time))
         logging.basicConfig(handlers=[stderr_handler, file_handler])
         logger = logging.getLogger()
-        logger.setLevel(logging.DEBUG)
+        logger.setLevel(logging.INFO)
 
 global_config = _Config()
 

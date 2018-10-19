@@ -5,7 +5,7 @@ from config import global_config as cfg
 from reader import CamRest676Reader, get_glove_matrix
 from reader import KvretReader
 from tsd_net import TSD, cuda_, nan
-from torch.optim import Adam
+from torch.optim import Adam, RMSprop
 from torch.autograd import Variable
 from reader import pad_sequences
 import argparse, time
@@ -44,6 +44,7 @@ class Model:
                                reader=self.reader)
         self.EV = evaluator_dict[dataset] # evaluator class
         if cfg.cuda: self.m = self.m.cuda()
+        self.optim = Adam(lr=cfg.lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=5e-5)
         self.base_epoch = -1
 
     def _convert_batch(self, py_batch, prev_z_py=None):
@@ -110,7 +111,7 @@ class Model:
             sup_loss = 0
             sup_cnt = 0
             data_iterator = self.reader.mini_batch_iterator('train')
-            optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),weight_decay=1e-5)
+            optim = self.optim
             for iter_num, dial_batch in enumerate(data_iterator):
                 turn_states = {}
                 prev_z = None
@@ -160,6 +161,8 @@ class Model:
                 lr *= cfg.lr_decay
                 if not early_stop_count:
                     break
+                self.optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()),
+                                  weight_decay=5e-5)
                 logging.info('early stop countdown %d, learning rate %f' % (early_stop_count, lr))
 
     def eval(self, data='test'):
@@ -225,7 +228,7 @@ class Model:
                 continue
             epoch_loss, cnt = 0,0
             data_iterator = self.reader.mini_batch_iterator('train')
-            optim = Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()), weight_decay=1e-5)
+            optim = self.optim #Adam(lr=lr, params=filter(lambda x: x.requires_grad, self.m.parameters()), weight_decay=0)
             for iter_num, dial_batch in enumerate(data_iterator):
                 turn_states = {}
                 prev_z = None
@@ -240,10 +243,11 @@ class Model:
                                 u_input_np=u_input_np,
                                 m_input_np=m_input_np,
                                 turn_states=turn_states,
+                                dial_id=turn_batch['dial_id'],
                                 u_len=u_len, m_len=m_len, mode=mode, **kw_ret)
 
                     if loss_rl is not None:
-                        loss = loss_rl
+                        loss = loss_rl #+ loss_mle * 0.1
                         loss.backward()
                         grad = torch.nn.utils.clip_grad_norm(self.m.parameters(), 2.0)
                         optim.step()
@@ -260,10 +264,10 @@ class Model:
             logging.info('validation loss in epoch %d sup:%f unsup:%f' % (epoch, valid_sup_loss, valid_unsup_loss))
             valid_loss = valid_sup_loss + valid_unsup_loss
 
-            self.save_model(epoch)
+            #self.save_model(epoch)
 
             if valid_loss <= prev_min_loss:
-                #self.save_model(epoch)
+                self.save_model(epoch)
                 prev_min_loss = valid_loss
             else:
                 early_stop_count -= 1
