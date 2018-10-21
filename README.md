@@ -5,10 +5,10 @@ Architectures" by Wenqiang Lei et al.
 
 ```
 @inproceedings{lei2018sequicity,
-  title={Sequicity: Simplifying Task-oriented Dialogue Systems with Single Sequence-to-Sequence Architectures},
-  author={Lei, Wenqiang and Jin, Xisen and Ren, Zhaochun and He, Xiangnan and Kan, Min-Yen and Yin, Dawei},
-  year={2018},
-  organization={ACL}
+  title={Sequicity: Simplifying task-oriented dialogue systems with single sequence-to-sequence architectures},
+  author={Lei, Wenqiang and Jin, Xisen and Kan, Min-Yen and Ren, Zhaochun and He, Xiangnan and Yin, Dawei},
+  booktitle={ACL},
+  year={2018}
 }
 ```
 
